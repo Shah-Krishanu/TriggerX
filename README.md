@@ -11,7 +11,9 @@ It is a standalone demo, not a Contineo clone and not connected to Contineo.
 4. Run `docker compose up --build`.
 5. Open `http://localhost:8000` for Campus Hub and `http://localhost:8501` for the Sentinel dashboard.
 
-To create an alert, open the Results portal, enter `DEMO0001`, and submit an incorrect date of birth three times. Refresh the dashboard; the alert explains that the same synthetic account had three failed sign-ins. For a successful demo sign-in, use DOB `2005-01-01` and Results campus ID `DEMO-ID-0001`.
+To see a Sentinel alert, open the Results portal, enter `DEMO0001`, and submit an incorrect date of birth three times. Refresh the dashboard; the alert explains that the same synthetic account had three failed sign-ins.
+
+To try two-factor sign-in, use the valid demo credentials (`DEMO0001`, DOB `2005-01-01`, Results campus ID `DEMO-ID-0001`). A new browser must enter a one-time code. The displayed `.test` email is fictional; open the local demo inbox link to read its code. After verifying, that browser skips OTP for 30 days. Use **Forget this trusted device** to revoke it and try again.
 
 The demo uses fake accounts only. Never point it at Contineo or real student data.
 
@@ -25,10 +27,45 @@ The demo uses fake accounts only. Never point it at Contineo or real student dat
 | Sentinel API | `localhost:9000` | Risk scoring and alert API |
 | Dashboard | `localhost:8501` | Review explainable alerts |
 
+Open the fictional portals through the proxy at `http://localhost:8000/results/`
+and `http://localhost:8000/library/`. Results validates a synthetic USN and DOB,
+redirects to a separate demo ID-card step, then opens a sample student dashboard.
+The library portal uses synthetic USN and DOB. Neither page uses real institution
+branding or accepts real student credentials.
+
 Test accounts use `DEMO0001` through `DEMO0020`.
 Their DOB is `2005-01-01`.
 Results ID numbers use `DEMO-ID-0001` through `DEMO-ID-0020`.
+Their fictional email addresses are `demo0001@students.campus.test` through `demo0020@students.campus.test`; `.test` addresses cannot receive real email.
 The `/directory` pages show synthetic Faker names. Results and Library are reachable through the gateway so sign-in events pass through the Sentinel-connected proxy.
+
+## Two-factor and trusted-device demo
+
+The portal checks a trusted-device cookie only after the synthetic primary credentials are valid. A new device receives a six-digit, five-minute OTP challenge. The local demo outbox keeps the code in process memory for the demo only; the database stores only a keyed code hash, a one-time challenge-token hash, and attempt metadata. Five wrong OTP entries lock that challenge, and a synthetic account can request at most three codes per hour.
+
+After correct OTP verification, the app places a random opaque token in an `HttpOnly`, `SameSite=Lax` cookie and stores only its SHA-256 hash with a 30-day server-side expiry. The server verifies both token and account; a client-supplied device name/ID is not trusted. HTTPS requests get a `Secure` cookie. The success page lets the user revoke this browser's trusted token.
+
+```mermaid
+flowchart TD
+    A[Enter synthetic credentials] --> B{Credentials valid?}
+    B -- No --> C[Reject and send sanitized Sentinel event]
+    B -- Yes --> D{Trusted cookie hash matches account and is unexpired?}
+    D -- Yes --> E[Continue without OTP]
+    D -- No --> F[Create one-time five-minute OTP challenge]
+    F --> G[Send through demo email adapter to fake .test inbox]
+    G --> H[User enters code from local demo inbox]
+    H --> I{Code correct, unexpired, and within attempts?}
+    I -- No --> J[Reject; lock challenge after five errors]
+    I -- Yes --> K[Consume challenge and create 30-day trusted token]
+    K --> L[Set HttpOnly cookie; store only token hash]
+    L --> E
+    E --> M[Forget-device action revokes token]
+    M --> F
+```
+
+**Demo-only boundary:** `CAMPUS_EMAIL_PROVIDER=demo` selects an in-memory fake inbox. It does not send email, and the inbox deliberately displays OTPs; never expose this demo service publicly or use it for real accounts. `apps/email_delivery.py` defines the small sender interface intended for a future provider adapter, but Gmail delivery is not implemented or configured.
+
+To add real email delivery later, an administrator must authorize a Google Cloud project, enable the Gmail API, configure OAuth consent and an OAuth client with the minimum send-email scope, and securely provision/store its refresh credentials for a permitted sender account. Do not send API keys, OAuth client secrets, refresh tokens, or real student addresses in chat or commit them to Git. We have not requested or stored any Gmail credentials, and no real email is sent by this demo.
 
 ## Watch modes
 
@@ -65,5 +102,4 @@ Template explanations work without an API key.
 Events store metadata and salted USN hashes only.
 Passwords, DOB, ID numbers, and page content are not stored.
 The proxy forwards login bodies without logging them.
-This demo cannot add OTP to a vendor login.
-It detects, limits, blocks, and alerts instead.
+This MFA flow applies only to the fictional Campus Hub demo, not Contineo or another vendor portal.

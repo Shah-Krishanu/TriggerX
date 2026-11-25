@@ -101,6 +101,7 @@ async def proxy_request(site: str, path: str, request: Request) -> Response:
         if key.lower() not in {"host", "content-length", "connection"}
     }
     forwarded_headers["x-forwarded-prefix"] = f"/{site}"
+    forwarded_headers["x-forwarded-proto"] = request.url.scheme
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
             upstream = await client.request(
@@ -113,7 +114,8 @@ async def proxy_request(site: str, path: str, request: Request) -> Response:
         logger.error("Upstream app request failed: %s", exc)
         return Response("Demo application unavailable", status_code=502)
 
-    usn = _login_usn(request.headers.get("content-type", ""), body) if path.endswith("login") else ""
+    is_login_request = f"/{path}".endswith(("/login", "/login/start"))
+    usn = _login_usn(request.headers.get("content-type", ""), body) if is_login_request else ""
     event = make_event(
         site=site,
         ip=client_ip,
@@ -128,12 +130,23 @@ async def proxy_request(site: str, path: str, request: Request) -> Response:
     except httpx.HTTPError as exc:
         logger.error("Sentinel event delivery failed: %s", exc)
 
-    response_headers = {
-        key: value for key, value in upstream.headers.items()
-        if key.lower() not in {"content-length", "transfer-encoding", "connection"}
-    }
-    return Response(
+    response_headers = {}
+    set_cookies = []
+    for key, value in upstream.headers.multi_items():
+        if key.lower() == "set-cookie":
+            set_cookies.append(value)
+        elif key.lower() not in {"content-length", "transfer-encoding", "connection"}:
+            response_headers[key] = value
+    location = response_headers.get("location")
+    if location and location.startswith("/") and not location.startswith(f"/{site}/"):
+        response_headers["location"] = f"/{site}{location}"
+    response = Response(
         content=upstream.content,
         status_code=upstream.status_code,
         headers=response_headers,
     )
+    response.raw_headers.extend(
+        (b"set-cookie", cookie.encode("latin-1"))
+        for cookie in set_cookies
+    )
+    return response

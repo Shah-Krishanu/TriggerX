@@ -79,6 +79,10 @@ def _honeypot_hashes() -> set[str]:
         return set()
 
 
+def _is_login_path(path: str) -> bool:
+    return path.endswith(("/login", "/login/start"))
+
+
 def _signals(db: sqlite3.Connection, event: dict) -> list[tuple[int, str]]:
     current = _parse_ts(event["ts"])
     ip = event["ip"]
@@ -95,7 +99,7 @@ def _signals(db: sqlite3.Connection, event: dict) -> list[tuple[int, str]]:
     signals = []
     distinct_users = {
         row["user_hash"] for row in recent_5m
-        if row["user_hash"] and row["path"].endswith("/login")
+        if row["user_hash"] and _is_login_path(row["path"])
     }
     if len(distinct_users) >= 5:
         signals.append((40, "Five or more different accounts from one IP within five minutes"))
@@ -103,7 +107,7 @@ def _signals(db: sqlite3.Connection, event: dict) -> list[tuple[int, str]]:
     is_login_failure = (
         user
         and event["method"].upper() == "POST"
-        and event["path"].endswith("/login")
+        and _is_login_path(event["path"])
         and event["status"] == 401
     )
     if is_login_failure:
@@ -114,7 +118,7 @@ def _signals(db: sqlite3.Connection, event: dict) -> list[tuple[int, str]]:
             and row["user_hash"] == user
             and row["method"].upper() == "POST"
             and row["status"] == 401
-            and row["path"].endswith("/login")
+            and _is_login_path(row["path"])
         ]
         if len(failed_logins) == 3:
             signals.append(
@@ -124,11 +128,20 @@ def _signals(db: sqlite3.Connection, event: dict) -> list[tuple[int, str]]:
                 )
             )
 
-    if user and event["status"] == 200:
+    if (
+        user
+        and event["method"].upper() == "POST"
+        and 200 <= event["status"] < 400
+        and event["path"].endswith("/login")
+    ):
         failures = [
             row for row in recent_5m
-            if row["user_hash"] == user and row["status"] == 401
-            and row["path"].endswith("/login")
+            if _parse_ts(row["ts"]) <= current
+            and row["site"] == event["site"]
+            and row["user_hash"] == user
+            and row["method"].upper() == "POST"
+            and row["status"] == 401
+            and _is_login_path(row["path"])
         ]
         if len(failures) >= 3:
             signals.append((35, "Successful login followed at least three failures for the same account"))

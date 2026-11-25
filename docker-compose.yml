@@ -2,9 +2,25 @@ services:
   results:
     build: .
     command: uvicorn apps.results_app:app --host 0.0.0.0 --port 8001
+    env_file:
+      - .env
+    environment:
+      CAMPUS_AUTH_DB: /app/authdata/campus-auth.sqlite
+      CAMPUS_DEMO_EMAIL_INBOX: "true"
+      CAMPUS_EMAIL_PROVIDER: ${CAMPUS_EMAIL_PROVIDER:-demo}
+    volumes:
+      - campus-auth-data:/app/authdata
   library:
     build: .
     command: uvicorn apps.library_app:app --host 0.0.0.0 --port 8002
+    env_file:
+      - .env
+    environment:
+      CAMPUS_AUTH_DB: /app/authdata/campus-auth.sqlite
+      CAMPUS_DEMO_EMAIL_INBOX: "true"
+      CAMPUS_EMAIL_PROVIDER: ${CAMPUS_EMAIL_PROVIDER:-demo}
+    volumes:
+      - campus-auth-data:/app/authdata
   sentinel:
     build: .
     command: uvicorn core.api:app --host 0.0.0.0 --port 9000
@@ -14,7 +30,7 @@ services:
       SENTINEL_DB: /app/data/sentinel.sqlite
       HONEYPOT_FILE: /app/honeypots.txt
     ports:
-      - "9000:9000"
+      - "127.0.0.1:9000:9000"
     volumes:
       - sentinel-data:/app/data
   proxy:
@@ -31,7 +47,7 @@ services:
       - library
       - sentinel
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
   dashboard:
     build: .
     command: streamlit run dashboard/app.py --server.address 0.0.0.0 --server.port 8501
@@ -41,7 +57,8 @@ services:
     depends_on:
       - sentinel
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
 
 volumes:
+  campus-auth-data:
   sentinel-data:

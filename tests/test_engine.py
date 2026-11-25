@@ -1,7 +1,7 @@
 import asyncio
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from core import engine
@@ -126,6 +126,40 @@ class RiskEngineTests(unittest.TestCase):
         third_login = {**event, "ts": base.replace(second=30).isoformat()}
         alert = asyncio.run(engine.record_event(third_login, explain))
         self.assertEqual(alert["score"], 35)
+    def test_successful_redirected_login_uses_failures_from_first_step(self) -> None:
+        async def explain(site: str, score: int, reasons: list[str]) -> str:
+            return "Template explanation"
+
+        base_time = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        for attempt in range(3):
+            event = {
+                "ts": (base_time + timedelta(seconds=attempt)).isoformat(),
+                "site": "results",
+                "ip": "192.0.2.20",
+                "user_hash": user_hash("DEMO0001"),
+                "path": "/login/start",
+                "method": "POST",
+                "status": 401,
+                "ua": "test-client",
+            }
+            asyncio.run(engine.record_event(event, explain))
+
+        success = {
+            "ts": (base_time + timedelta(seconds=4)).isoformat(),
+            "site": "results",
+            "ip": "192.0.2.20",
+            "user_hash": user_hash("DEMO0001"),
+            "path": "/login",
+            "method": "POST",
+            "status": 303,
+            "ua": "test-client",
+        }
+        alert = asyncio.run(engine.record_event(success, explain))
+
+        self.assertIn(
+            "Successful login followed at least three failures for the same account",
+            alert["reasons"],
+        )
 
 
 if __name__ == "__main__":

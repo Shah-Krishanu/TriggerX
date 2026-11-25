@@ -24,6 +24,12 @@ Never point it at Contineo or real student data.
 | Sentinel API | 9000 | Risk scoring, alerts, and approvals |
 | Dashboard | 8501 | Review alerts and manage blocks |
 
+Open the fictional portals through the proxy at `http://localhost:8000/results/`
+and `http://localhost:8000/library/`. Results validates a synthetic USN and DOB,
+redirects to a separate demo ID-card step, then opens a sample student dashboard.
+The library portal uses synthetic USN and DOB. Neither page uses real institution
+branding or accepts real student credentials.
+
 Test accounts use `DEMO0001` through `DEMO0020`.
 Their DOB is `2005-01-01`.
 Results ID numbers use `DEMO-ID-0001` through `DEMO-ID-0020`.

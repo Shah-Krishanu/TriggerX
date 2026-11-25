@@ -83,7 +83,8 @@ async def proxy_request(site: str, path: str, request: Request) -> Response:
         logger.error("Upstream app request failed: %s", exc)
         return Response("Demo application unavailable", status_code=502)
 
-    usn = _login_usn(request.headers.get("content-type", ""), body) if path.endswith("login") else ""
+    is_login_request = path.endswith(("/login", "/login/start"))
+    usn = _login_usn(request.headers.get("content-type", ""), body) if is_login_request else ""
     event = make_event(
         site=site,
         ip=client_ip,
@@ -102,6 +103,9 @@ async def proxy_request(site: str, path: str, request: Request) -> Response:
         key: value for key, value in upstream.headers.items()
         if key.lower() not in {"content-length", "transfer-encoding", "connection"}
     }
+    location = response_headers.get("location")
+    if location and location.startswith("/") and not location.startswith(f"/{site}/"):
+        response_headers["location"] = f"/{site}{location}"
     return Response(
         content=upstream.content,
         status_code=upstream.status_code,

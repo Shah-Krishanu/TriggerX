@@ -771,7 +771,10 @@ def create_app(site: str) -> FastAPI:
 </style></head>
 <body>
   <header><span class="brand">CAMPUS SENTINEL<small>FICTIONAL STUDENT PORTAL</small></span>
-    <form method="post" action="./logout"><button type="submit">Sign out</button></form>
+    <div>
+      <form method="post" action="./forget-device"><button type="submit">Forget this trusted device</button></form>
+      <form method="post" action="./logout"><button type="submit">Sign out</button></form>
+    </div>
   </header>
   <main>
     <section class="welcome">

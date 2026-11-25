@@ -122,6 +122,7 @@ class CampusPortalTests(unittest.TestCase):
             self.assertEqual(verified.headers["location"], "/dashboard")
             dashboard = client.get(verified.headers["location"])
             self.assertIn("DEMO STUDENT DASHBOARD", dashboard.text)
+            self.assertIn("Forget this trusted device", dashboard.text)
             self.assertIn("httponly", verified.headers["set-cookie"].lower())
             self.assertIsNone(demo_outbox.read(DEMO_EMAILS["DEMO0001"]))
 

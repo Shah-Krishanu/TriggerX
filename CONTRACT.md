@@ -51,8 +51,8 @@ Do not change without telling the whole team.
 - GET  /alerts           -> list of {id, ts, ip, site, score, reasons, explanation}
 - GET  /blocked          -> list of {ip, until, reason}
 - GET  /pending          -> list of {id, action, ip, reason}
-- POST /approve/{id}     -> {"ok": true}
-- POST /unblock          body: {"ip": "X"}        -> {"ok": true}
+- POST /approve/{id}     header X-Admin-Token    -> {"ok": true}
+- POST /unblock          body: {"ip": "X"}        -> {"ok": true}; requires X-Admin-Token
 
 ## Risk scoring (0-100)
 - Many USNs from one IP (5+ in 5 min)   +40
@@ -75,6 +75,7 @@ Actions:
 
 ## Shared .env (NEVER commit)
 SALT=choose-a-secret-word
+SENTINEL_ADMIN_TOKEN=choose-a-separate-admin-secret
 GEMINI_API_KEY=...
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...

@@ -27,7 +27,13 @@ try:
     right.metric("Pending approvals", len(pending.json()))
 
     st.subheader("Recent alerts")
-    st.dataframe(alerts.json(), use_container_width=True, hide_index=True)
+    st.caption("Each alert shows the rule and plain-language explanation that triggered it.")
+    for alert in alerts.json():
+        st.markdown(f"**Risk score {alert['score']}/100**")
+        st.text(f"{alert['site']} | {alert['ts']} | IP {alert['ip']}")
+        st.text("Rule: " + "; ".join(alert["reasons"]))
+        st.text("Explanation: " + alert["explanation"])
+        st.divider()
 
     st.subheader("Blocked addresses")
     for item in blocked.json():

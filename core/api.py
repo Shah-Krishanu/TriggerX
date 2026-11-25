@@ -45,7 +45,10 @@ async def receive_event(event: Event) -> dict:
     alert = await engine.record_event(event.model_dump(), explain)
     if alert and alert["score"] >= 70:
         await send_alert(alert)
-    return {"ok": True}
+    response = {"ok": True}
+    if alert:
+        response["alert"] = alert
+    return response
 
 
 @app.get("/check")

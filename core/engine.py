@@ -88,7 +88,7 @@ def _signals(db: sqlite3.Connection, event: dict) -> list[tuple[int, str]]:
     ip = event["ip"]
     user = event["user_hash"]
     recent = db.execute(
-        "SELECT ts, user_hash, status, ua, path FROM events WHERE ip = ?",
+        "SELECT ts, site, user_hash, method, status, ua, path FROM events WHERE ip = ?",
         (ip,),
     ).fetchall()
     window_5m = current - timedelta(minutes=5)
@@ -104,15 +104,43 @@ def _signals(db: sqlite3.Connection, event: dict) -> list[tuple[int, str]]:
     if len(distinct_users) >= 5:
         signals.append((40, "Five or more different accounts from one IP within five minutes"))
 
+    is_login_failure = (
+        user
+        and event["method"].upper() == "POST"
+        and _is_login_path(event["path"])
+        and event["status"] == 401
+    )
+    if is_login_failure:
+        failed_logins = [
+            row for row in recent_5m
+            if _parse_ts(row["ts"]) <= current
+            and row["site"] == event["site"]
+            and row["user_hash"] == user
+            and row["method"].upper() == "POST"
+            and row["status"] == 401
+            and _is_login_path(row["path"])
+        ]
+        if len(failed_logins) == 3:
+            signals.append(
+                (
+                    35,
+                    "Three failed POST /login attempts for the same hashed account from this IP at this site within five minutes",
+                )
+            )
+
     if (
         user
-        and event["method"] == "POST"
+        and event["method"].upper() == "POST"
         and 200 <= event["status"] < 400
         and event["path"].endswith("/login")
     ):
         failures = [
             row for row in recent_5m
-            if row["user_hash"] == user and row["status"] == 401
+            if _parse_ts(row["ts"]) <= current
+            and row["site"] == event["site"]
+            and row["user_hash"] == user
+            and row["method"].upper() == "POST"
+            and row["status"] == 401
             and _is_login_path(row["path"])
         ]
         if len(failures) >= 3:

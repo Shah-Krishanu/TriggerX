@@ -1,12 +1,21 @@
 import html
+import hmac
 import json
 import time
+from contextlib import asynccontextmanager
 from datetime import date
 from secrets import token_urlsafe
 from urllib.parse import parse_qs
 
+from apps import auth
+from apps.email_delivery import (
+    demo_inbox_enabled,
+    demo_outbox,
+    get_otp_email_sender,
+)
+from core.config import user_hash
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from faker import Faker
 
 DEMO_ACCOUNTS = {
@@ -15,6 +24,10 @@ DEMO_ACCOUNTS = {
         "id_no": f"DEMO-ID-{number:04d}",
     }
     for number in range(1, 21)
+}
+DEMO_EMAILS = {
+    usn: f"{usn.lower()}@students.campus.test"
+    for usn in DEMO_ACCOUNTS
 }
 fake = Faker()
 Faker.seed(4810)
@@ -47,9 +60,113 @@ def _birth_date(values: dict) -> str:
 
 
 def create_app(site: str) -> FastAPI:
-    app = FastAPI(title=f"Fake {site.title()} Campus Portal")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        auth.initialize()
+        yield
+
+    app = FastAPI(title=f"Campus Hub {site.title()} Demo", lifespan=lifespan)
     pending_flows: dict[str, tuple[str, float]] = {}
     active_sessions: dict[str, tuple[str, float]] = {}
+    site_name = "Results" if site == "results" else "Library"
+
+    def secure_cookie(request: Request) -> bool:
+        return request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
+
+    def request_prefix(request: Request) -> str:
+        return request.headers.get("x-forwarded-prefix", "").rstrip("/")
+
+    def sign_in_success(request: Request, usn: str):
+        route_prefix = request_prefix(request)
+        if site == "results":
+            session_token = token_urlsafe(32)
+            active_sessions[session_token] = (usn, time.monotonic() + 3600)
+            response = RedirectResponse(
+                f"{route_prefix}/dashboard" if route_prefix else "/dashboard",
+                status_code=303,
+            )
+            response.set_cookie(
+                "campus_demo_access",
+                session_token,
+                max_age=3600,
+                httponly=True,
+                samesite="lax",
+                secure=secure_cookie(request),
+                path="/",
+            )
+            return response
+        content = f"""
+<main><h1>Demo sign-in successful</h1>
+<p>You are signed in to this fictional campus service.</p>
+<form method="post" action="{route_prefix}/forget-device">
+  <button type="submit">Forget this trusted device</button>
+</form></main>"""
+        return HTMLResponse(content)
+
+    def otp_challenge_page(request: Request, usn: str, message: str = "") -> HTMLResponse:
+        route_prefix = request_prefix(request)
+        inbox_url = f"{route_prefix}/demo-inbox/{usn}"
+        error = f"<p role=\"alert\">{html.escape(message)}</p>" if message else ""
+        content = f"""
+<main><h1>Verify this new device</h1>
+<p>We sent a one-time code to {html.escape(DEMO_EMAILS[usn])}.</p>
+{error}
+<form method="post" action="{route_prefix}/verify-otp">
+  <label for="code">Email verification code</label>
+  <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+  <button type="submit">Verify and trust this device</button>
+</form>
+<p><a href="{inbox_url}">Open the demo inbox</a> (local demonstration only).</p>
+</main>"""
+        return HTMLResponse(content, status_code=202 if not message else 401)
+
+    def start_otp_challenge(request: Request, usn: str):
+        if not demo_inbox_enabled():
+            return JSONResponse(
+                {"ok": False, "message": "Demo email inbox is disabled"},
+                status_code=503,
+            )
+        try:
+            sender = get_otp_email_sender()
+        except RuntimeError as exc:
+            return JSONResponse({"ok": False, "message": str(exc)}, status_code=503)
+        challenge = auth.create_challenge(usn)
+        if challenge is None:
+            return JSONResponse(
+                {"ok": False, "message": "Too many verification codes requested"},
+                status_code=429,
+            )
+        raw_token, code = challenge
+        sender.send_otp(DEMO_EMAILS[usn], code)
+        if "application/json" in request.headers.get("content-type", ""):
+            response = JSONResponse(
+                {"ok": True, "requires_otp": True, "message": "Verification code sent"},
+                status_code=202,
+            )
+        else:
+            response = otp_challenge_page(request, usn)
+        response.set_cookie(
+            auth.CHALLENGE_COOKIE,
+            raw_token,
+            max_age=auth.OTP_TTL_SECONDS,
+            httponly=True,
+            samesite="lax",
+            secure=secure_cookie(request),
+            path="/",
+        )
+        return response
+
+    def finish_sign_in(request: Request, usn: str):
+        if auth.is_trusted_device(
+            usn,
+            request.cookies.get(auth.TRUSTED_DEVICE_COOKIE),
+        ):
+            if "application/json" in request.headers.get("content-type", ""):
+                return JSONResponse(
+                    {"ok": True, "message": "Trusted-device sign-in accepted"}
+                )
+            return sign_in_success(request, usn)
+        return start_otp_challenge(request, usn)
 
     @app.get("/health")
     def health() -> dict:
@@ -58,6 +175,23 @@ def create_app(site: str) -> FastAPI:
     @app.get("/directory")
     def directory() -> list[dict]:
         return [{"usn": usn, "name": DEMO_NAMES[usn]} for usn in DEMO_ACCOUNTS]
+
+    @app.get("/demo-inbox/{usn}", response_class=HTMLResponse)
+    def demo_inbox(usn: str) -> HTMLResponse:
+        normalized_usn = usn.strip().upper()
+        email = DEMO_EMAILS.get(normalized_usn)
+        if not demo_inbox_enabled() or not email:
+            return HTMLResponse("<main><h1>Demo inbox unavailable</h1></main>", status_code=404)
+        code = demo_outbox.read(email)
+        message = (
+            f"<p>Your one-time code is <strong><code>{html.escape(code)}</code></strong>.</p>"
+            if code else "<p>No current code. Start a new sign-in to request one.</p>"
+        )
+        return HTMLResponse(
+            "<main><p>This is an in-memory local demo inbox, not a real email account.</p>"
+            f"<h1>Fake student inbox</h1><p>To: <code>{html.escape(email)}</code></p>"
+            f"{message}</main>"
+        )
 
     def render_portal_page(
         step: str = "credentials",
@@ -469,6 +603,22 @@ def create_app(site: str) -> FastAPI:
         if values is None:
             return JSONResponse({"ok": False}, status_code=400)
         if site == "results":
+            content_type = request.headers.get("content-type", "")
+            if "application/json" in content_type:
+                usn = str(values.get("usn", "")).strip().upper()
+                account = DEMO_ACCOUNTS.get(usn)
+                valid = bool(
+                    account
+                    and _birth_date(values) == account["dob"]
+                    and values.get("id_no") == account["id_no"]
+                )
+                if not valid:
+                    return JSONResponse(
+                        {"ok": False, "message": "Invalid demo credentials"},
+                        status_code=401,
+                    )
+                return finish_sign_in(request, usn)
+
             flow_token = request.cookies.get("campus_demo_access", "")
             flow = pending_flows.get(flow_token)
             usn = str(values.get("usn", "")).strip().upper()
@@ -496,27 +646,87 @@ def create_app(site: str) -> FastAPI:
                 )
 
             pending_flows.pop(flow_token, None)
-            session_token = token_urlsafe(32)
-            active_sessions[session_token] = (usn, time.monotonic() + 3600)
-            response = RedirectResponse("/dashboard", status_code=303)
-            response.set_cookie(
-                "campus_demo_access",
-                session_token,
-                max_age=3600,
-                httponly=True,
-                samesite="lax",
-                path="/",
-            )
-            return response
+            return finish_sign_in(request, usn)
 
         usn = str(values.get("usn", "")).strip().upper()
         account = DEMO_ACCOUNTS.get(usn)
         valid = bool(account and _birth_date(values) == account["dob"])
-        return JSONResponse(
-            {"ok": True, "message": "Demo login accepted"}
-            if valid else {"ok": False, "message": "Invalid demo credentials"},
-            status_code=200 if valid else 401,
+        if not valid:
+            if "application/json" in request.headers.get("content-type", ""):
+                return JSONResponse(
+                    {"ok": False, "message": "Invalid demo credentials"},
+                    status_code=401,
+                )
+            return HTMLResponse(
+                render_portal_page(error="credentials").body,
+                status_code=401,
+            )
+        return finish_sign_in(request, usn)
+
+    @app.post("/verify-otp")
+    async def verify_otp(request: Request):
+        values = await _request_values(request)
+        if values is None:
+            return JSONResponse({"ok": False}, status_code=400)
+        raw_challenge = request.cookies.get(auth.CHALLENGE_COOKIE)
+        status, account_hash = auth.verify_challenge(
+            raw_challenge,
+            str(values.get("code", "")),
         )
+        if status != "verified" or account_hash is None:
+            message = {
+                "expired": "This code has expired. Start sign-in again.",
+                "locked": "Too many incorrect codes. Start sign-in again.",
+                "missing": "This verification request is no longer valid. Start sign-in again.",
+            }.get(status, "Incorrect code. Try again.")
+            if "application/json" in request.headers.get("content-type", ""):
+                return JSONResponse({"ok": False, "message": message}, status_code=401)
+            response = HTMLResponse(
+                f"<main><h1>Verify this new device</h1><p role=\"alert\">{html.escape(message)}</p>"
+                "<a href=\"/\">Start sign-in again</a></main>",
+                status_code=401,
+            )
+            if status in {"expired", "locked", "missing"}:
+                response.delete_cookie(auth.CHALLENGE_COOKIE, path="/")
+            return response
+
+        usn = next(
+            (
+                candidate for candidate in DEMO_ACCOUNTS
+                if hmac.compare_digest(user_hash(candidate), account_hash)
+            ),
+            None,
+        )
+        if usn is None:
+            return JSONResponse(
+                {"ok": False, "message": "Synthetic account lookup failed"},
+                status_code=500,
+            )
+        demo_outbox.clear(DEMO_EMAILS[usn])
+        trusted_token = auth.trust_account_hash(account_hash)
+        response = (
+            JSONResponse({"ok": True, "message": "Demo sign-in accepted"})
+            if "application/json" in request.headers.get("content-type", "")
+            else sign_in_success(request, usn)
+        )
+        response.set_cookie(
+            auth.TRUSTED_DEVICE_COOKIE,
+            trusted_token,
+            max_age=auth.TRUSTED_DEVICE_SECONDS,
+            httponly=True,
+            samesite="lax",
+            secure=secure_cookie(request),
+            path="/",
+        )
+        response.delete_cookie(auth.CHALLENGE_COOKIE, path="/")
+        return response
+
+    @app.post("/forget-device")
+    def forget_trusted_device(request: Request):
+        auth.forget_device(request.cookies.get(auth.TRUSTED_DEVICE_COOKIE))
+        response = HTMLResponse("<main><h1>Trusted device forgotten</h1></main>")
+        response.delete_cookie(auth.TRUSTED_DEVICE_COOKIE, path="/")
+        return response
 
     @app.get("/dashboard")
     def dashboard(request: Request):
@@ -561,7 +771,10 @@ def create_app(site: str) -> FastAPI:
 </style></head>
 <body>
   <header><span class="brand">CAMPUS SENTINEL<small>FICTIONAL STUDENT PORTAL</small></span>
-    <form method="post" action="./logout"><button type="submit">Sign out</button></form>
+    <div>
+      <form method="post" action="./forget-device"><button type="submit">Forget this trusted device</button></form>
+      <form method="post" action="./logout"><button type="submit">Sign out</button></form>
+    </div>
   </header>
   <main>
     <section class="welcome">

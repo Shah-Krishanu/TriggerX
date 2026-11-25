@@ -1,11 +1,37 @@
+import os
+import tempfile
 import unittest
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from apps import auth
 from apps.base import create_app
+from apps.email_delivery import demo_outbox
 
 
 class DemoPortalTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.previous_db_path = auth.DB_PATH
+        auth.DB_PATH = str(Path(self.temp.name) / "campus-auth.sqlite")
+        self.previous_salt = os.environ.get("SALT")
+        self.previous_inbox = os.environ.get("CAMPUS_DEMO_EMAIL_INBOX")
+        os.environ["SALT"] = "campus-auth-test-secret"
+        os.environ["CAMPUS_DEMO_EMAIL_INBOX"] = "true"
+
+    def tearDown(self) -> None:
+        auth.DB_PATH = self.previous_db_path
+        for key, previous in (
+            ("SALT", self.previous_salt),
+            ("CAMPUS_DEMO_EMAIL_INBOX", self.previous_inbox),
+        ):
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
+        self.temp.cleanup()
+
     def test_results_portal_renders_first_authentication_step(self) -> None:
         with TestClient(create_app("results")) as client:
             response = client.get("/")
@@ -33,13 +59,21 @@ class DemoPortalTests(unittest.TestCase):
                 data={"usn": "DEMO0001", "id_no": "DEMO-ID-0001"},
                 follow_redirects=False,
             )
-            dashboard = client.get(dashboard_redirect.headers["location"])
+            code = demo_outbox.read("demo0001@students.campus.test")
+            verified = client.post(
+                "/verify-otp",
+                data={"code": code},
+                follow_redirects=False,
+            )
+            dashboard = client.get(verified.headers["location"])
 
         self.assertEqual(first_step.status_code, 303)
         self.assertEqual(first_step.headers["location"], "/id-card")
         self.assertIn("Enter the demo ID card number", id_page.text)
-        self.assertEqual(dashboard_redirect.status_code, 303)
-        self.assertEqual(dashboard_redirect.headers["location"], "/dashboard")
+        self.assertEqual(dashboard_redirect.status_code, 202)
+        self.assertIn("Verify this new device", dashboard_redirect.text)
+        self.assertEqual(verified.status_code, 303)
+        self.assertEqual(verified.headers["location"], "/dashboard")
         self.assertEqual(dashboard.status_code, 200)
         self.assertIn("DEMO STUDENT DASHBOARD", dashboard.text)
         self.assertIn("DEMO0001", dashboard.text)
@@ -71,8 +105,8 @@ class DemoPortalTests(unittest.TestCase):
                 },
             )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"ok": True, "message": "Demo login accepted"})
+        self.assertEqual(response.status_code, 202)
+        self.assertIn("Verify this new device", response.text)
 
 
 if __name__ == "__main__":

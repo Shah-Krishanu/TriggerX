@@ -19,10 +19,10 @@ Never point it at Contineo or real student data.
 | Service | Port | Purpose |
 |---|---:|---|
 | Reverse proxy | 8000 | Checks each client and routes requests |
-| Results portal | 8001 | Fictional USN, DOB, and ID login |
+| Student portal | 8001 | Fictional USN, DOB, and ID login |
 | Library portal | 8002 | Fictional USN and DOB login |
-| Sentinel API | 9000 | Risk scoring, alerts, and approvals |
-| Dashboard | 8501 | Review alerts and manage blocks |
+| Sentinel API | 8501 | Risk scoring, alerts, and approvals |
+| Dashboard | 8000/results/admin | Review alerts and manage blocks |
 
 Open the fictional portals through the proxy at `http://localhost:8000/results/`
 and `http://localhost:8000/library/`. Results validates a synthetic USN and DOB,
